@@ -31,7 +31,7 @@ app.innerHTML = `
           <div class="hud-group">
             <div class="stat-chip">
               <span class="stat-label">装甲</span>
-              <strong class="stat-value health" id="hud-health">♥♥♥♥♥</strong>
+              <strong class="stat-value health" id="hud-health" aria-label="当前装甲 5，共 5">♥ 05 / 05</strong>
             </div>
             <div class="stat-chip">
               <span class="stat-label">核心</span>
@@ -286,7 +286,10 @@ const renderLevelClear = (state: LevelClearState): void => {
 };
 
 const updateHud = (hud: HudState): void => {
-  hudHealth.textContent = '♥'.repeat(Math.max(0, hud.hp)) + '♡'.repeat(Math.max(0, hud.maxHp - hud.hp));
+  const maxHp = Math.max(1, Math.round(hud.maxHp));
+  const currentHp = Math.max(0, Math.min(maxHp, Math.round(hud.hp)));
+  hudHealth.textContent = `♥ ${currentHp.toString().padStart(2, '0')} / ${maxHp.toString().padStart(2, '0')}`;
+  hudHealth.setAttribute('aria-label', `当前装甲 ${currentHp}，最大装甲 ${maxHp}`);
   hudBase.textContent = hud.baseHp.toString().padStart(2, '0');
   hudWave.textContent = `${hud.level.toString().padStart(2, '0')} / ${hud.totalLevels.toString().padStart(2, '0')}`;
   hudLevelName.textContent = `关卡 · ${hud.levelName}`;
