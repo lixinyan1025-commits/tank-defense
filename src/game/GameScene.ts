@@ -3,8 +3,11 @@ import { AudioManager } from './audio';
 import {
   canProjectileDamageBase,
   enemyProjectileCanDamagePlayer,
+  LIGHTNING_DAMAGE,
+  LIGHTNING_TARGET_LIMIT,
   projectileDamageFor,
   projectilePassesBlockedTerrain,
+  stackPickupAmount,
 } from './combatRules';
 import {
   COLORS,
@@ -34,7 +37,7 @@ type GameStatus = 'briefing' | 'playing' | 'paused' | 'reward' | 'victory' | 'de
 type Team = 'player' | 'enemy';
 type ProjectileKind = 'normal' | 'split' | 'ricochet' | 'piercing' | 'freeze' | 'chain' | 'flame' | 'confusion';
 type AmmoSkill = Exclude<ProjectileKind, 'normal'>;
-type ActiveSkill = 'slow' | 'airstrike' | 'drone' | 'mine' | 'repair' | 'teleport' | 'heal' | 'shield' | 'overdrive' | 'emp';
+type ActiveSkill = 'slow' | 'airstrike' | 'drone' | 'mine' | 'repair' | 'teleport' | 'heal' | 'shield' | 'overdrive' | 'lightning';
 type PickupKind = AmmoSkill | ActiveSkill;
 
 export interface HudState {
@@ -228,7 +231,7 @@ const skillInfo: Record<PickupKind, { name: string; description: string; icon: s
   heal: { name: '紧急维修', description: '立即恢复两点装甲', icon: '✚', category: 'active', operation: '受伤后轻按 Q；满血使用不会消耗' },
   shield: { name: '能量护盾', description: '五秒内免疫所有伤害', icon: '⬡', category: 'active', operation: '轻按 Q 立即开启；持续五秒，无需长按' },
   overdrive: { name: '火力超频', description: '七秒内提升移动速度和射速', icon: '»', category: 'active', operation: '轻按 Q 开启；随后按住 SPACE 连续射击' },
-  emp: { name: 'EMP 脉冲', description: '冻结全场普通敌军两秒半', icon: '◉', category: 'active', operation: '轻按 Q 立即释放；全场敌军暂时停机' },
+  lightning: { name: '雷霆打击', description: '随机落雷命中最多三辆敌方坦克，每辆扣除一点生命', icon: 'ϟ', category: 'active', operation: '轻按 Q 释放；自动随机锁定三个可受伤敌军' },
 };
 
 const enemyStats: Record<EnemyKind, { hp: number; speed: number; fireInterval: number; score: number; color: number; view: number }> = {
@@ -296,7 +299,9 @@ export class GameScene extends Phaser.Scene {
   private lastKillAt = -10_000;
   private ammoSkill?: AmmoSkill;
   private ammoShots = -1;
+  private ammoStacks = 0;
   private activeSkill?: ActiveSkill;
+  private activeCharges = 0;
   private lastPickup?: PickupKind;
   private lastPickupAt = -10_000;
   private timeSlowUntil = 0;
@@ -432,7 +437,9 @@ export class GameScene extends Phaser.Scene {
     this.lastKillAt = -10_000;
     this.ammoSkill = undefined;
     this.ammoShots = -1;
+    this.ammoStacks = 0;
     this.activeSkill = undefined;
+    this.activeCharges = 0;
     this.lastPickup = undefined;
     this.lastPickupAt = -10_000;
     this.timeSlowUntil = 0;
@@ -746,6 +753,7 @@ export class GameScene extends Phaser.Scene {
       if (this.ammoShots <= 0) {
         this.ammoSkill = undefined;
         this.ammoShots = -1;
+        this.ammoStacks = 0;
         this.toast('特殊弹药已耗尽，恢复标准炮弹');
       }
       this.dispatchHud();
@@ -1225,13 +1233,19 @@ export class GameScene extends Phaser.Scene {
     this.lastPickup = kind;
     this.lastPickupAt = this.elapsedMs;
     if (info.category === 'ammo') {
-      this.ammoSkill = kind as AmmoSkill;
-      this.ammoShots = info.shots ?? 6;
-      this.toast(`获得【${info.name}】— 按【空格】发射，剩余 ${this.ammoShots} 发`);
+      const incoming = kind as AmmoSkill;
+      const stacked = this.ammoSkill === incoming;
+      this.ammoShots = stackPickupAmount(this.ammoSkill, incoming, this.ammoShots, info.shots ?? 6);
+      this.ammoSkill = incoming;
+      this.ammoStacks = stacked ? this.ammoStacks + 1 : 1;
+      this.toast(`${stacked ? '叠加' : '获得'}【${info.name}】— ${this.ammoStacks} 层，共 ${this.ammoShots} 发`);
       if (this.player) this.floatingText(this.player.x, this.player.y - 24, '空格发射', COLORS.yellow);
     } else {
-      this.activeSkill = kind as ActiveSkill;
-      this.toast(`获得【${info.name}】— 轻按【Q】释放，无需长按`);
+      const incoming = kind as ActiveSkill;
+      const stacked = this.activeSkill === incoming;
+      this.activeCharges = stackPickupAmount(this.activeSkill, incoming, this.activeCharges, 1);
+      this.activeSkill = incoming;
+      this.toast(`${stacked ? '叠加' : '获得'}【${info.name}】— 轻按【Q】释放，可使用 ${this.activeCharges} 次`);
       if (this.player) this.floatingText(this.player.x, this.player.y - 24, 'Q 释放技能', COLORS.violet);
     }
     this.audio.play('pickup');
@@ -1318,16 +1332,22 @@ export class GameScene extends Phaser.Scene {
     } else if (skill === 'overdrive') {
       this.overdriveUntil = this.elapsedMs + 7000;
       this.toast('火力超频：7 秒内提高移动速度与射速');
-    } else if (skill === 'emp') {
-      for (const enemy of this.enemies) {
-        if (enemy.alive) enemy.frozenUntil = Math.max(enemy.frozenUntil, this.elapsedMs + (enemy.kind === 'boss' ? 1000 : 2500));
+    } else if (skill === 'lightning') {
+      const targets = Phaser.Utils.Array.Shuffle(
+        this.enemies.filter((enemy) => enemy.alive && enemy.invulnerableUntil <= this.elapsedMs),
+      ).slice(0, LIGHTNING_TARGET_LIMIT);
+      if (targets.length === 0) {
+        consumed = false;
+        this.toast('当前没有可受伤敌军，雷霆打击未消耗');
+      } else {
+        this.triggerThunderStrike(targets);
+        this.toast(`雷霆打击：随机命中 ${targets.length} 辆敌军，每辆 -${LIGHTNING_DAMAGE} HP`);
       }
-      this.cameras.main.flash(220, 100, 180, 255, false);
-      this.toast('EMP 脉冲释放：全场敌军暂时停机');
     }
 
     if (consumed) {
-      this.activeSkill = undefined;
+      this.activeCharges = Math.max(0, this.activeCharges - 1);
+      if (this.activeCharges === 0) this.activeSkill = undefined;
       this.audio.play('pickup');
       this.dispatchHud();
     }
@@ -1338,6 +1358,40 @@ export class GameScene extends Phaser.Scene {
     const core = this.add.rectangle(0, 0, 7, 7, COLORS.red);
     const display = this.add.container(x, y, [ring, core]).setDepth(4);
     this.mines.push({ x, y, expiresAt: this.elapsedMs + 10_000, display });
+  }
+
+  private triggerThunderStrike(targets: TankEntity[]): void {
+    this.cameras.main.flash(180, 185, 225, 255, false);
+    this.audio.play('explode');
+    for (const target of targets) {
+      const points: Array<{ x: number; y: number }> = [{ x: target.x + Phaser.Math.Between(-48, 48), y: 0 }];
+      const segments = 7;
+      for (let index = 1; index <= segments; index += 1) {
+        const progress = index / segments;
+        points.push({
+          x: index === segments ? target.x : target.x + Phaser.Math.Between(-24, 24),
+          y: target.y * progress,
+        });
+      }
+
+      const bolt = this.add.graphics().setDepth(14);
+      bolt.lineStyle(9, COLORS.violet, 0.42);
+      for (let index = 1; index < points.length; index += 1) {
+        bolt.lineBetween(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+      }
+      bolt.lineStyle(3, 0xe8ffff, 1);
+      for (let index = 1; index < points.length; index += 1) {
+        bolt.lineBetween(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+      }
+
+      const impact = this.add.circle(target.x, target.y, 12, COLORS.cyan, 0.3)
+        .setStrokeStyle(4, 0xffffff, 0.95)
+        .setDepth(13);
+      this.tweens.add({ targets: [bolt, impact], alpha: 0, duration: 260, onComplete: () => { bolt.destroy(); impact.destroy(); } });
+      this.spark(target.x, target.y, COLORS.cyan, 16);
+      this.floatingText(target.x, target.y - 24, `-${LIGHTNING_DAMAGE} HP`, COLORS.cyan);
+      this.damageTank(target, LIGHTNING_DAMAGE, 'lightning');
+    }
   }
 
   private spawnDrone(): void {
@@ -1606,7 +1660,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildRewardChoices(): RewardChoice[] {
     const allKinds = Object.keys(skillInfo) as PickupKind[];
-    const available = Phaser.Utils.Array.Shuffle(allKinds.filter((kind) => kind !== this.ammoSkill && kind !== this.activeSkill));
+    const available = Phaser.Utils.Array.Shuffle([...allKinds]);
     const ammo = available.find((kind) => skillInfo[kind].category === 'ammo');
     const active = available.find((kind) => skillInfo[kind].category === 'active');
     const selected = [ammo, active].filter((kind): kind is PickupKind => Boolean(kind));
@@ -1780,10 +1834,10 @@ export class GameScene extends Phaser.Scene {
       combo: this.comboMultiplier,
       resonance: this.resonance,
       ammo: ammo
-        ? { name: ammo.name, description: ammo.description, icon: ammo.icon, shots: this.ammoShots, operation: ammo.operation, status: `当前装备 · 剩余 ${this.ammoShots} 发` }
+        ? { name: ammo.name, description: ammo.description, icon: ammo.icon, shots: this.ammoShots, operation: ammo.operation, status: `当前装备 · ${this.ammoStacks} 层 · 剩余 ${this.ammoShots} 发` }
         : { name: '标准炮弹', description: '稳定可靠，无特殊效果', icon: '•', shots: -1, operation: '按住 SPACE 连续发射', status: '默认弹药 · 无限' },
       active: active
-        ? { name: active.name, description: active.description, icon: active.icon, ready: true, cooldownProgress: 1, operation: active.operation, status: '当前携带 · 可使用 1 次' }
+        ? { name: active.name, description: active.description, icon: active.icon, ready: true, cooldownProgress: 1, operation: active.operation, status: `当前携带 · 可使用 ${this.activeCharges} 次` }
         : { name: '等待拾取', description: '拾取紫色战术箱获得主动技能', icon: 'Q', ready: false, cooldownProgress: 0, operation: '拾取后轻按 Q 释放；无需长按', status: '主动技能槽为空' },
       latestPickup: latest
         ? { name: latest.name, icon: latest.icon, operation: latest.operation, category: latest.category, fresh: this.elapsedMs - this.lastPickupAt < 5000 }

@@ -22,3 +22,13 @@ const ENEMY_PROJECTILE_ARM_DISTANCE = 24;
 
 export const enemyProjectileCanDamagePlayer = (travelledDistance: number): boolean =>
   travelledDistance >= ENEMY_PROJECTILE_ARM_DISTANCE;
+
+export const LIGHTNING_TARGET_LIMIT = 3;
+export const LIGHTNING_DAMAGE = 1;
+
+export const stackPickupAmount = (
+  currentKind: string | undefined,
+  incomingKind: string,
+  currentAmount: number,
+  incomingAmount: number,
+): number => currentKind === incomingKind ? Math.max(0, currentAmount) + incomingAmount : incomingAmount;
