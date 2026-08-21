@@ -7,6 +7,11 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 1300,
   },
+  server: {
+    watch: {
+      ignored: ['**/artifacts/**'],
+    },
+  },
   test: {
     environment: 'node',
   },
