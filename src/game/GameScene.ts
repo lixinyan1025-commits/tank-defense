@@ -22,11 +22,11 @@ import {
   worldToGrid,
   type TerrainCell,
 } from './map';
+import { LEVEL_DEFINITIONS, type EnemyKind } from './levels';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
-type GameStatus = 'briefing' | 'playing' | 'paused' | 'victory' | 'defeat';
+type GameStatus = 'briefing' | 'playing' | 'paused' | 'reward' | 'victory' | 'defeat';
 type Team = 'player' | 'enemy';
-type EnemyKind = 'normal' | 'scout' | 'heavy' | 'sniper' | 'ricochet' | 'boss';
 type ProjectileKind = 'normal' | 'split' | 'ricochet' | 'piercing' | 'freeze' | 'chain' | 'flame' | 'confusion';
 type AmmoSkill = Exclude<ProjectileKind, 'normal'>;
 type ActiveSkill = 'slow' | 'airstrike' | 'drone' | 'mine' | 'repair' | 'teleport' | 'heal' | 'shield' | 'overdrive' | 'emp';
@@ -36,8 +36,9 @@ export interface HudState {
   hp: number;
   maxHp: number;
   baseHp: number;
-  wave: number;
-  totalWaves: number;
+  level: number;
+  totalLevels: number;
+  levelName: string;
   enemies: number;
   score: number;
   combo: number;
@@ -66,6 +67,26 @@ export interface HudState {
     category: 'ammo' | 'active';
     fresh: boolean;
   };
+}
+
+export interface RewardChoice {
+  kind: PickupKind;
+  name: string;
+  description: string;
+  icon: string;
+  category: 'ammo' | 'active';
+  operation: string;
+}
+
+export interface LevelClearState {
+  level: number;
+  totalLevels: number;
+  levelName: string;
+  nextLevelName: string;
+  bonusScore: number;
+  repairedPlayer: boolean;
+  repairedBase: boolean;
+  choices: RewardChoice[];
 }
 
 export interface ResultState {
@@ -172,7 +193,7 @@ interface DifficultyTuning {
   pickupRate: number;
 }
 
-const TOTAL_WAVES = 5;
+const TOTAL_LEVELS = LEVEL_DEFINITIONS.length;
 const PLAYER_SIZE = 25;
 const ENEMY_SIZE = 25;
 
@@ -253,10 +274,10 @@ export class GameScene extends Phaser.Scene {
 
   private baseHp = 5;
   private maxBaseHp = 5;
-  private wave = 0;
+  private level = 0;
   private spawnQueue: EnemyKind[] = [];
   private nextSpawnAt = 0;
-  private nextWaveAt = 0;
+  private levelClearAt = 0;
   private nextPickupAt = 0;
   private score = 0;
   private kills = 0;
@@ -318,11 +339,13 @@ export class GameScene extends Phaser.Scene {
     window.addEventListener('tank-defense:mute', this.onMute);
     window.addEventListener('tank-defense:pause', this.onPause);
     window.addEventListener('tank-defense:fire', this.onFire);
+    window.addEventListener('tank-defense:reward', this.onReward);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('tank-defense:start', this.onStart);
       window.removeEventListener('tank-defense:mute', this.onMute);
       window.removeEventListener('tank-defense:pause', this.onPause);
       window.removeEventListener('tank-defense:fire', this.onFire);
+      window.removeEventListener('tank-defense:reward', this.onReward);
     });
 
     this.dispatchHud();
@@ -346,7 +369,7 @@ export class GameScene extends Phaser.Scene {
     this.updateDrones(dt);
     this.updateParticles(dt);
     this.updateTemporaryWalls();
-    this.updateWaveDirector();
+    this.updateLevelDirector();
     if (this.resonance >= 100) this.activateResonance();
 
     if (this.elapsedMs - this.lastHudAt > 90) {
@@ -374,17 +397,25 @@ export class GameScene extends Phaser.Scene {
     if (this.status === 'playing') this.firePlayerWeapon();
   };
 
+  private onReward = (event: Event): void => {
+    if (this.status !== 'reward') return;
+    const kind = (event as CustomEvent<{ kind: string }>).detail?.kind as PickupKind;
+    if (!kind || !(kind in skillInfo)) return;
+    this.collectPickup(kind);
+    this.startNextLevel();
+  };
+
   private startGame(difficulty: Difficulty): void {
     this.clearEntities();
     this.difficulty = difficulty;
     this.terrain = createLevelMap();
     this.drawTerrain();
     this.elapsedMs = 0;
-    this.wave = 0;
+    this.level = 0;
     this.spawnQueue = [];
     this.nextSpawnAt = 0;
-    this.nextWaveAt = 0;
-    this.nextPickupAt = 9000;
+    this.levelClearAt = 0;
+    this.nextPickupAt = Number.POSITIVE_INFINITY;
     this.score = 0;
     this.kills = 0;
     this.comboCount = 0;
@@ -408,13 +439,11 @@ export class GameScene extends Phaser.Scene {
     this.player.hp = tuning.playerHp;
     this.player.maxHp = tuning.playerHp;
     this.player.invulnerableUntil = 2000;
-    this.showPlayerGuide();
     this.status = 'playing';
     this.pauseText.setVisible(false);
-    this.startNextWave();
-    this.spawnStarterPickups();
+    this.startNextLevel();
     this.dispatchHud();
-    this.toast('方向键 / WASD 移动，空格射击，Q 使用技能');
+    this.toast('关卡制启动：清场后从三项奖励中选择一个技能');
   }
 
   private clearEntities(): void {
@@ -611,6 +640,7 @@ export class GameScene extends Phaser.Scene {
   private showPlayerGuide(): void {
     const player = this.player;
     if (!player) return;
+    this.playerGuide?.destroy();
     const ring = this.add.circle(0, 0, 28, COLORS.cyan, 0.08).setStrokeStyle(3, COLORS.cyan, 0.9);
     const label = this.add.text(0, -42, '▼ 你的坦克', {
       fontFamily: 'Noto Sans SC, sans-serif',
@@ -1085,8 +1115,8 @@ export class GameScene extends Phaser.Scene {
     this.floatingText(enemy.x, enemy.y, `+${points}`, COLORS.yellow);
     this.audio.play('explode');
 
-    const pickupChance = 0.19 * difficultyTuning[this.difficulty].pickupRate;
-    if (enemy.kind === 'boss' || Math.random() < pickupChance) this.spawnPickup(enemy.x, enemy.y);
+    const pickupChance = 0.08 * difficultyTuning[this.difficulty].pickupRate;
+    if (enemy.kind !== 'boss' && Math.random() < pickupChance) this.spawnPickup(enemy.x, enemy.y);
   }
 
   private activateResonance(): void {
@@ -1120,20 +1150,6 @@ export class GameScene extends Phaser.Scene {
     this.toast(`LXY 浪尖共鸣：清除敌弹、控场${repaired ? '并修复核心 1 点' : ''}`);
     this.floatingText(center.x, center.y, 'LXY RESONANCE', COLORS.cyan);
     this.dispatchHud();
-  }
-
-  private spawnStarterPickups(): void {
-    const choices = Phaser.Utils.Array.Shuffle(Object.keys(skillInfo) as PickupKind[]).slice(0, 6);
-    const positions = [
-      gridCenter(8, 21),
-      gridCenter(10, 21),
-      gridCenter(16, 21),
-      gridCenter(18, 21),
-      gridCenter(10, 17),
-      gridCenter(16, 17),
-    ];
-    choices.forEach((kind, index) => this.spawnPickup(positions[index].x, positions[index].y, kind));
-    this.toast('开局战术补给已投放：黄色为弹药，紫色按 Q 释放');
   }
 
   private spawnPickup(x?: number, y?: number, forcedKind?: PickupKind): void {
@@ -1496,7 +1512,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateWaveDirector(): void {
+  private updateLevelDirector(): void {
     if (this.spawnQueue.length > 0 && this.elapsedMs >= this.nextSpawnAt && this.enemies.filter((enemy) => enemy.alive).length < 8) {
       const kind = this.spawnQueue.shift();
       if (kind) this.spawnEnemy(kind);
@@ -1505,29 +1521,103 @@ export class GameScene extends Phaser.Scene {
 
     const aliveEnemies = this.enemies.filter((enemy) => enemy.alive).length;
     if (this.spawnQueue.length === 0 && aliveEnemies === 0) {
-      if (this.nextWaveAt === 0) this.nextWaveAt = this.elapsedMs + 1400;
-      if (this.elapsedMs >= this.nextWaveAt) {
-        if (this.wave >= TOTAL_WAVES) this.finishGame('victory');
-        else this.startNextWave();
-      }
+      if (this.levelClearAt === 0) this.levelClearAt = this.elapsedMs + 1000;
+      if (this.elapsedMs >= this.levelClearAt) this.completeLevel();
     }
   }
 
-  private startNextWave(): void {
-    this.wave += 1;
-    this.nextWaveAt = 0;
-    const waves: EnemyKind[][] = [
-      ['normal', 'normal', 'normal', 'normal'],
-      ['normal', 'scout', 'normal', 'scout', 'normal'],
-      ['heavy', 'normal', 'sniper', 'heavy', 'normal'],
-      ['scout', 'ricochet', 'heavy', 'scout', 'ricochet', 'heavy'],
-      ['boss', 'normal', 'scout', 'normal', 'heavy'],
-    ];
-    this.spawnQueue = [...waves[this.wave - 1]];
+  private completeLevel(): void {
+    if (this.status !== 'playing') return;
+    const definition = LEVEL_DEFINITIONS[this.level - 1];
+    const player = this.player;
+    const repairedPlayer = Boolean(player && player.hp < player.maxHp);
+    const repairedBase = this.baseHp < this.maxBaseHp;
+    if (player) player.hp = Math.min(player.maxHp, player.hp + 1);
+    this.baseHp = Math.min(this.maxBaseHp, this.baseHp + 1);
+    this.score += definition.clearBonus;
+    this.comboCount = 0;
+    this.comboMultiplier = 1;
+    this.clearLevelCombat();
+    this.dispatchHud();
+
+    if (this.level >= TOTAL_LEVELS) {
+      this.floatingText(WORLD_SIZE / 2, WORLD_SIZE / 2, `最终关完成 +${definition.clearBonus}`, COLORS.yellow);
+      this.finishGame('victory');
+      return;
+    }
+
+    this.status = 'reward';
+    this.audio.play('wave');
+    window.dispatchEvent(new CustomEvent<LevelClearState>('tank-defense:level-clear', {
+      detail: {
+        level: this.level,
+        totalLevels: TOTAL_LEVELS,
+        levelName: definition.name,
+        nextLevelName: LEVEL_DEFINITIONS[this.level].name,
+        bonusScore: definition.clearBonus,
+        repairedPlayer,
+        repairedBase,
+        choices: this.buildRewardChoices(),
+      },
+    }));
+  }
+
+  private buildRewardChoices(): RewardChoice[] {
+    const allKinds = Object.keys(skillInfo) as PickupKind[];
+    const available = Phaser.Utils.Array.Shuffle(allKinds.filter((kind) => kind !== this.ammoSkill && kind !== this.activeSkill));
+    const ammo = available.find((kind) => skillInfo[kind].category === 'ammo');
+    const active = available.find((kind) => skillInfo[kind].category === 'active');
+    const selected = [ammo, active].filter((kind): kind is PickupKind => Boolean(kind));
+    const third = available.find((kind) => !selected.includes(kind));
+    if (third) selected.push(third);
+
+    return Phaser.Utils.Array.Shuffle(selected).map((kind) => ({
+      kind,
+      name: skillInfo[kind].name,
+      description: skillInfo[kind].description,
+      icon: skillInfo[kind].icon,
+      category: skillInfo[kind].category,
+      operation: skillInfo[kind].operation,
+    }));
+  }
+
+  private clearLevelCombat(): void {
+    this.enemies.forEach((enemy) => enemy.display.destroy());
+    this.projectiles.forEach((projectile) => projectile.display.destroy());
+    this.pickups.forEach((pickup) => pickup.display.destroy());
+    this.bombs.forEach((bomb) => bomb.marker.destroy());
+    this.monsterBursts.forEach((burst) => burst.marker.destroy());
+    this.enemies = [];
+    this.projectiles = [];
+    this.pickups = [];
+    this.bombs = [];
+    this.monsterBursts = [];
+  }
+
+  private startNextLevel(): void {
+    this.level += 1;
+    this.status = 'playing';
+    this.levelClearAt = 0;
+    const definition = LEVEL_DEFINITIONS[this.level - 1];
+    this.terrain = createLevelMap();
+    this.drawTerrain();
+    const player = this.player;
+    if (player) {
+      const spawn = gridCenter(13, 22);
+      player.x = spawn.x;
+      player.y = spawn.y;
+      player.display.setPosition(spawn.x, spawn.y).setVisible(true);
+      player.invulnerableUntil = this.elapsedMs + 1600;
+      this.applyDirection(player, 'up');
+      this.showPlayerGuide();
+    }
+    this.spawnQueue = [...definition.enemies];
     this.nextSpawnAt = this.elapsedMs + 500;
     this.audio.play('wave');
-    this.toast(this.wave === TOTAL_WAVES ? '最终波：非坦克生物“潮汐巨兽”从水域苏醒' : `第 ${this.wave} 波敌军接近`);
-    this.floatingText(WORLD_SIZE / 2, 80, `WAVE ${this.wave}`, COLORS.cyan);
+    this.toast(this.level === TOTAL_LEVELS
+      ? '最终关：仅有一只“潮汐巨兽”，击败它即可通关'
+      : `第 ${this.level} 关「${definition.name}」：${definition.subtitle}`);
+    this.floatingText(WORLD_SIZE / 2, 80, `LEVEL ${this.level} · ${definition.name}`, COLORS.cyan);
     this.dispatchHud();
   }
 
@@ -1540,7 +1630,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private togglePause(): void {
-    if (this.status === 'briefing' || this.status === 'victory' || this.status === 'defeat') return;
+    if (this.status === 'briefing' || this.status === 'reward' || this.status === 'victory' || this.status === 'defeat') return;
     this.status = this.status === 'paused' ? 'playing' : 'paused';
     const paused = this.status === 'paused';
     this.pauseText.setVisible(paused);
@@ -1640,8 +1730,9 @@ export class GameScene extends Phaser.Scene {
       hp: Math.max(0, playerHp),
       maxHp: playerMaxHp,
       baseHp: this.baseHp,
-      wave: Math.max(1, this.wave),
-      totalWaves: TOTAL_WAVES,
+      level: Math.max(1, this.level),
+      totalLevels: TOTAL_LEVELS,
+      levelName: LEVEL_DEFINITIONS[Math.max(0, this.level - 1)]?.name ?? LEVEL_DEFINITIONS[0].name,
       enemies: this.enemies.filter((enemy) => enemy.alive).length + this.spawnQueue.length,
       score: this.score,
       combo: this.comboMultiplier,

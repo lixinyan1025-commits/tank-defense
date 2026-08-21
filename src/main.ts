@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import './styles.css';
-import { GameScene, type Difficulty, type HudState, type ResultState } from './game/GameScene';
+import { GameScene, type Difficulty, type HudState, type LevelClearState, type ResultState } from './game/GameScene';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 
@@ -40,8 +40,8 @@ app.innerHTML = `
           </div>
           <div class="hud-group center">
             <div class="stat-chip">
-              <span class="stat-label">波次</span>
-              <strong class="stat-value accent" id="hud-wave">01 / 05</strong>
+              <span class="stat-label" id="hud-level-name">关卡 · 边境巡防</span>
+              <strong class="stat-value accent" id="hud-wave">01 / 06</strong>
             </div>
             <div class="stat-chip">
               <span class="stat-label">敌军</span>
@@ -67,7 +67,7 @@ app.innerHTML = `
               <p class="eyebrow">WAVECREST COMMUNITY // LXY</p>
               <h2>坦克防线</h2>
               <p class="subtitle">守住浪尖核心，改写战场路线。</p>
-              <p class="mission-line">五波敌军正在接近。利用砖墙、钢墙、水域和草地建立你的防线。</p>
+              <p class="mission-line">六个独立关卡正在等待。每次清关可三选一技能，最终关只出现一只潮汐巨兽。</p>
               <div class="start-controls">
                 <select id="difficulty" aria-label="选择难度">
                   <option value="easy">轻松巡防</option>
@@ -131,9 +131,9 @@ app.innerHTML = `
           <h3>本次任务</h3>
           <ol class="mission-list">
             <li>保护底部的浪尖核心</li>
-            <li>清除五波敌方坦克</li>
+            <li>依次完成六个独立关卡</li>
             <li>利用 LXY 砖墙改变路线</li>
-            <li>拾取技能，建立战术组合</li>
+            <li>清关后从三项技能中选择一项</li>
           </ol>
         </section>
 
@@ -167,6 +167,7 @@ const toast = requireElement<HTMLDivElement>('#toast');
 const hudHealth = requireElement<HTMLElement>('#hud-health');
 const hudBase = requireElement<HTMLElement>('#hud-base');
 const hudWave = requireElement<HTMLElement>('#hud-wave');
+const hudLevelName = requireElement<HTMLElement>('#hud-level-name');
 const hudEnemies = requireElement<HTMLElement>('#hud-enemies');
 const hudScore = requireElement<HTMLElement>('#hud-score');
 const hudCombo = requireElement<HTMLElement>('#hud-combo');
@@ -214,6 +215,7 @@ const focusGameCanvas = (): void => {
 };
 
 const renderResult = (result: ResultState): void => {
+  overlayContent.classList.remove('reward-panel');
   const victory = result.outcome === 'victory';
   setOverlay(
     `
@@ -240,10 +242,54 @@ const renderResult = (result: ResultState): void => {
   });
 };
 
+const renderLevelClear = (state: LevelClearState): void => {
+  overlayContent.classList.add('reward-panel');
+  const repairText = [state.repairedPlayer ? '装甲 +1' : '', state.repairedBase ? '核心 +1' : '']
+    .filter(Boolean)
+    .join(' · ') || '装甲与核心状态良好';
+  setOverlay(
+    `
+      <p class="eyebrow">LEVEL ${state.level} / ${state.totalLevels} CLEAR</p>
+      <h2>关卡完成</h2>
+      <p class="subtitle">「${state.levelName}」已肃清，下一关：${state.nextLevelName}</p>
+      <div class="clear-summary">
+        <span>清关奖励 +${state.bonusScore} 分</span>
+        <span>${repairText}</span>
+      </div>
+      <h3 class="reward-heading">选择一项技能进入下一关</h3>
+      <div class="reward-grid">
+        ${state.choices.map((choice) => `
+          <button class="reward-card ${choice.category}" type="button" data-reward-kind="${choice.kind}">
+            <span class="reward-icon">${choice.icon}</span>
+            <span class="reward-type">${choice.category === 'ammo' ? '特殊弹药' : '主动技能'}</span>
+            <strong>${choice.name}</strong>
+            <span class="reward-description">${choice.description}</span>
+            <span class="reward-operation">${choice.operation}</span>
+            <span class="reward-select">选择并进入下一关</span>
+          </button>
+        `).join('')}
+      </div>
+    `,
+    true,
+  );
+
+  document.querySelectorAll<HTMLButtonElement>('[data-reward-kind]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.rewardKind;
+      if (!kind) return;
+      setOverlay('', false);
+      overlayContent.classList.remove('reward-panel');
+      window.dispatchEvent(new CustomEvent('tank-defense:reward', { detail: { kind } }));
+      focusGameCanvas();
+    });
+  });
+};
+
 const updateHud = (hud: HudState): void => {
   hudHealth.textContent = '♥'.repeat(Math.max(0, hud.hp)) + '♡'.repeat(Math.max(0, hud.maxHp - hud.hp));
   hudBase.textContent = hud.baseHp.toString().padStart(2, '0');
-  hudWave.textContent = `${hud.wave.toString().padStart(2, '0')} / ${hud.totalWaves.toString().padStart(2, '0')}`;
+  hudWave.textContent = `${hud.level.toString().padStart(2, '0')} / ${hud.totalLevels.toString().padStart(2, '0')}`;
+  hudLevelName.textContent = `关卡 · ${hud.levelName}`;
   hudEnemies.textContent = hud.enemies.toString().padStart(2, '0');
   hudScore.textContent = hud.score.toString().padStart(6, '0');
   hudCombo.textContent = `×${hud.combo.toFixed(1)}`;
@@ -322,6 +368,10 @@ window.addEventListener('tank-defense:toast', (event) => {
 
 window.addEventListener('tank-defense:result', (event) => {
   renderResult((event as CustomEvent<ResultState>).detail);
+});
+
+window.addEventListener('tank-defense:level-clear', (event) => {
+  renderLevelClear((event as CustomEvent<LevelClearState>).detail);
 });
 
 window.addEventListener('tank-defense:paused', (event) => {
