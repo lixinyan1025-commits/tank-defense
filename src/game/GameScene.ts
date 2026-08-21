@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { AudioManager } from './audio';
 import {
   canProjectileDamageBase,
+  enemyProjectileCanDamagePlayer,
   projectileDamageFor,
   projectilePassesBlockedTerrain,
 } from './combatRules';
@@ -1048,6 +1049,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       const player = this.player;
       if (player?.alive && pointHitsTank(projectile.x, projectile.y, player)) {
+        if (!enemyProjectileCanDamagePlayer(projectile.distance)) return false;
         this.damageTank(player, projectile.damage, projectile.ownerId);
         return true;
       }

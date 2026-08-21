@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canProjectileDamageBase,
+  enemyProjectileCanDamagePlayer,
   projectileDamageFor,
   projectilePassesBlockedTerrain,
 } from './combatRules';
@@ -22,5 +23,11 @@ describe('projectile combat rules', () => {
     expect(canProjectileDamageBase('enemy', 'piercing')).toBe(false);
     expect(canProjectileDamageBase('player', 'normal')).toBe(false);
     expect(canProjectileDamageBase('enemy', 'normal')).toBe(true);
+  });
+
+  it('prevents point-blank contact shots from causing collision-like damage', () => {
+    expect(enemyProjectileCanDamagePlayer(0)).toBe(false);
+    expect(enemyProjectileCanDamagePlayer(23.99)).toBe(false);
+    expect(enemyProjectileCanDamagePlayer(24)).toBe(true);
   });
 });

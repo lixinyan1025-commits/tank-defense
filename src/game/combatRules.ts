@@ -17,3 +17,8 @@ export const canProjectileDamageBase = (team: CombatTeam, kind: CombatProjectile
   team === 'enemy' && kind !== 'piercing';
 
 export const projectilePassesBlockedTerrain = (kind: CombatProjectileKind): boolean => kind === 'piercing';
+
+const ENEMY_PROJECTILE_ARM_DISTANCE = 24;
+
+export const enemyProjectileCanDamagePlayer = (travelledDistance: number): boolean =>
+  travelledDistance >= ENEMY_PROJECTILE_ARM_DISTANCE;
