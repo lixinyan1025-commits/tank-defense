@@ -4,6 +4,8 @@
 
 在线试玩：<https://lixinyan1025-commits.github.io/tank-defense/>
 
+单文件 HTML 版：<https://lixinyan1025-commits.github.io/tank-defense/tank-defense.html>
+
 ## 已实现玩法
 
 - WASD/方向键四方向移动，空格发射炮弹。
@@ -46,10 +48,11 @@ npm run dev
 ```bash
 npm test
 npm run build
+npm run build:html
 npm run preview
 ```
 
-生产文件输出到 `dist/`。
+生产文件输出到 `dist/`。执行 `npm run build:html` 会额外生成可独立交付的 `dist/tank-defense.html`，游戏代码、样式和图标都内嵌在这个 HTML 文件中。
 
 ## GitHub Pages 部署
 
