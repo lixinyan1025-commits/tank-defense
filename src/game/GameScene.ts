@@ -1,6 +1,15 @@
 import Phaser from 'phaser';
 import { AudioManager } from './audio';
 import {
+  canProjectileDamageBase,
+  enemyProjectileCanDamagePlayer,
+  LIGHTNING_DAMAGE,
+  LIGHTNING_TARGET_LIMIT,
+  projectileDamageFor,
+  projectilePassesBlockedTerrain,
+  stackPickupAmount,
+} from './combatRules';
+import {
   COLORS,
   DIRECTION_VECTOR,
   MAP_COLS,
@@ -12,7 +21,6 @@ import {
 } from './constants';
 import {
   cellAtWorld,
-  canDamageBase,
   createLevelMap,
   directionToward,
   gridCenter,
@@ -29,7 +37,7 @@ type GameStatus = 'briefing' | 'playing' | 'paused' | 'reward' | 'victory' | 'de
 type Team = 'player' | 'enemy';
 type ProjectileKind = 'normal' | 'split' | 'ricochet' | 'piercing' | 'freeze' | 'chain' | 'flame' | 'confusion';
 type AmmoSkill = Exclude<ProjectileKind, 'normal'>;
-type ActiveSkill = 'slow' | 'airstrike' | 'drone' | 'mine' | 'repair' | 'teleport' | 'heal' | 'shield' | 'overdrive' | 'emp';
+type ActiveSkill = 'slow' | 'airstrike' | 'drone' | 'mine' | 'repair' | 'teleport' | 'heal' | 'shield' | 'overdrive' | 'lightning';
 type PickupKind = AmmoSkill | ActiveSkill;
 
 export interface HudState {
@@ -130,7 +138,6 @@ interface ProjectileEntity {
   vy: number;
   damage: number;
   bouncesRemaining: number;
-  piercesRemaining: number;
   distance: number;
   bornAt: number;
   splitTriggered: boolean;
@@ -159,6 +166,10 @@ interface BombEntity {
   x: number;
   y: number;
   explodeAt: number;
+  trackingUntil: number;
+  offsetX: number;
+  offsetY: number;
+  target?: TankEntity;
   marker: Phaser.GameObjects.Arc;
 }
 
@@ -206,13 +217,13 @@ const difficultyTuning: Record<Difficulty, DifficultyTuning> = {
 const skillInfo: Record<PickupKind, { name: string; description: string; icon: string; category: 'ammo' | 'active'; operation: string; shots?: number }> = {
   split: { name: '分裂弹', description: '飞行后分裂为三颗扇形小弹', icon: '⑂', category: 'ammo', operation: '按住 SPACE 发射；飞行一段距离后自动分裂', shots: 7 },
   ricochet: { name: '反弹弹', description: '最多反弹两次，也可能击中自己', icon: '◇', category: 'ammo', operation: '按住 SPACE 发射；瞄准墙面利用反弹角度', shots: 8 },
-  piercing: { name: '穿透弹', description: '贯穿多个敌人并击穿砖墙', icon: '➜', category: 'ammo', operation: '按住 SPACE 发射；对准同一直线上的敌人', shots: 6 },
+  piercing: { name: '穿透弹', description: '贯穿敌军、砖墙、钢墙与全部障碍', icon: '➜', category: 'ammo', operation: '按住 SPACE 发射；弹道可贯穿全场，但绝不伤害我方基地', shots: 6 },
   freeze: { name: '冰冻弹', description: '冻结普通敌人三秒', icon: '❄', category: 'ammo', operation: '按住 SPACE 发射；命中敌人立即冻结', shots: 6 },
   chain: { name: '连锁闪电', description: '命中后跳向附近三个敌人', icon: 'ϟ', category: 'ammo', operation: '按住 SPACE 发射；优先瞄准密集敌群', shots: 6 },
   flame: { name: '火焰喷射', description: '短程三连火焰，可快速破砖', icon: '♨', category: 'ammo', operation: '按住 SPACE 连续喷射；靠近目标效果最好', shots: 7 },
-  confusion: { name: '混乱弹', description: '令敌人短暂攻击自己的同伴', icon: '↻', category: 'ammo', operation: '按住 SPACE 发射；命中后引发敌军内讧', shots: 5 },
+  confusion: { name: '策反弹', description: '零伤害策反敌人，使其短暂攻击同伴', icon: '↻', category: 'ammo', operation: '按住 SPACE 发射；命中只施加策反，不造成任何伤害', shots: 5 },
   slow: { name: '时间减速', description: '敌军与敌弹减速五秒', icon: '◷', category: 'active', operation: '轻按 Q 立即释放；全场生效，无需长按' },
-  airstrike: { name: '呼叫空袭', description: '在附近投下六枚炸弹', icon: '✦', category: 'active', operation: '轻按 Q 释放；以当前位置为中心，随后避开红圈' },
+  airstrike: { name: '呼叫空袭', description: '六枚制导炸弹自动锁定存活敌军', icon: '✦', category: 'active', operation: '轻按 Q 释放；红圈会追踪敌军，爆炸前短暂锁定落点' },
   drone: { name: '召唤僚机', description: '自动追踪敌人并射击八秒', icon: '⌁', category: 'active', operation: '轻按 Q 释放；僚机会自动锁定最近敌人' },
   mine: { name: '地雷投放', description: '原地布置一颗范围地雷', icon: '⊛', category: 'active', operation: '轻按 Q 在脚下放置；场上最多三颗' },
   repair: { name: '修复砖墙', description: '修复或生成前方两格砖墙', icon: '▦', category: 'active', operation: '面向目标砖墙后轻按 Q；检测前方两格' },
@@ -220,7 +231,7 @@ const skillInfo: Record<PickupKind, { name: string; description: string; icon: s
   heal: { name: '紧急维修', description: '立即恢复两点装甲', icon: '✚', category: 'active', operation: '受伤后轻按 Q；满血使用不会消耗' },
   shield: { name: '能量护盾', description: '五秒内免疫所有伤害', icon: '⬡', category: 'active', operation: '轻按 Q 立即开启；持续五秒，无需长按' },
   overdrive: { name: '火力超频', description: '七秒内提升移动速度和射速', icon: '»', category: 'active', operation: '轻按 Q 开启；随后按住 SPACE 连续射击' },
-  emp: { name: 'EMP 脉冲', description: '冻结全场普通敌军两秒半', icon: '◉', category: 'active', operation: '轻按 Q 立即释放；全场敌军暂时停机' },
+  lightning: { name: '雷霆打击', description: '随机落雷命中最多三辆敌方坦克，每辆扣除一点生命', icon: 'ϟ', category: 'active', operation: '轻按 Q 释放；自动随机锁定三个可受伤敌军' },
 };
 
 const enemyStats: Record<EnemyKind, { hp: number; speed: number; fireInterval: number; score: number; color: number; view: number }> = {
@@ -288,7 +299,9 @@ export class GameScene extends Phaser.Scene {
   private lastKillAt = -10_000;
   private ammoSkill?: AmmoSkill;
   private ammoShots = -1;
+  private ammoStacks = 0;
   private activeSkill?: ActiveSkill;
+  private activeCharges = 0;
   private lastPickup?: PickupKind;
   private lastPickupAt = -10_000;
   private timeSlowUntil = 0;
@@ -424,7 +437,9 @@ export class GameScene extends Phaser.Scene {
     this.lastKillAt = -10_000;
     this.ammoSkill = undefined;
     this.ammoShots = -1;
+    this.ammoStacks = 0;
     this.activeSkill = undefined;
+    this.activeCharges = 0;
     this.lastPickup = undefined;
     this.lastPickupAt = -10_000;
     this.timeSlowUntil = 0;
@@ -738,6 +753,7 @@ export class GameScene extends Phaser.Scene {
       if (this.ammoShots <= 0) {
         this.ammoSkill = undefined;
         this.ammoShots = -1;
+        this.ammoStacks = 0;
         this.toast('特殊弹药已耗尽，恢复标准炮弹');
       }
       this.dispatchHud();
@@ -793,9 +809,8 @@ export class GameScene extends Phaser.Scene {
       y,
       vx: Math.cos(baseAngle) * speed,
       vy: Math.sin(baseAngle) * speed,
-      damage: owner.kind === 'heavy' || owner.kind === 'boss' ? 2 : 1,
+      damage: projectileDamageFor(kind, owner.kind === 'heavy' || owner.kind === 'boss' ? 2 : 1),
       bouncesRemaining: kind === 'ricochet' ? (owner.team === 'player' ? 2 : 1) : 0,
-      piercesRemaining: kind === 'piercing' ? 3 : 0,
       distance: 0,
       bornAt: this.elapsedMs,
       splitTriggered: false,
@@ -962,8 +977,23 @@ export class GameScene extends Phaser.Scene {
     const point = worldToGrid(nextX, nextY);
     const tileId = `tile-${point.col}-${point.row}`;
 
+    if (projectilePassesBlockedTerrain(projectile.kind)) {
+      if (cell.type === 'brick' && !projectile.hitIds.has(tileId)) {
+        projectile.hitIds.add(tileId);
+        this.damageBrick(point.col, point.row, 2);
+      } else if (cell.type === 'steel') {
+        this.audio.play('steel');
+        this.spark(nextX, nextY, COLORS.violet, 5);
+      } else if (cell.type === 'base') {
+        this.spark(nextX, nextY, COLORS.cyan, 5);
+      }
+      projectile.x = nextX;
+      projectile.y = nextY;
+      return false;
+    }
+
     if (cell.type === 'base') {
-      if (canDamageBase(projectile.team)) this.damageBase(projectile.damage);
+      if (canProjectileDamageBase(projectile.team, projectile.kind)) this.damageBase(projectile.damage);
       else {
         this.audio.play('steel');
         this.spark(nextX, nextY, COLORS.cyan, 4);
@@ -993,12 +1023,6 @@ export class GameScene extends Phaser.Scene {
     if (cell.type === 'brick' && !projectile.hitIds.has(tileId)) {
       projectile.hitIds.add(tileId);
       this.damageBrick(point.col, point.row, projectile.kind === 'piercing' || projectile.kind === 'flame' ? 2 : 1);
-      if (projectile.kind === 'piercing' && projectile.piercesRemaining > 0) {
-        projectile.piercesRemaining -= 1;
-        projectile.x = nextX;
-        projectile.y = nextY;
-        return false;
-      }
     } else if (cell.type === 'steel') {
       this.audio.play('steel');
       this.spark(nextX, nextY, COLORS.steel, 5);
@@ -1016,14 +1040,11 @@ export class GameScene extends Phaser.Scene {
           this.toast(enemy.kind === 'boss' ? 'Boss 抗性：短暂冻结' : '敌军已冻结');
         } else if (projectile.kind === 'confusion') {
           enemy.confusedUntil = this.elapsedMs + (enemy.kind === 'boss' ? 1600 : 4000);
-          this.toast(enemy.kind === 'boss' ? 'Boss 抗性：短暂干扰' : '混乱生效：敌军开始内讧');
+          this.toast(enemy.kind === 'boss' ? 'Boss 抗性：短暂策反' : '策反成功：敌军开始内讧');
         }
-        this.damageTank(enemy, projectile.damage, projectile.ownerId);
+        if (projectile.damage > 0) this.damageTank(enemy, projectile.damage, projectile.ownerId);
         if (projectile.kind === 'chain') this.triggerChainLightning(enemy, projectile.ownerId);
-        if (projectile.kind === 'piercing' && projectile.piercesRemaining > 0) {
-          projectile.piercesRemaining -= 1;
-          return false;
-        }
+        if (projectile.kind === 'piercing') return false;
         return true;
       }
 
@@ -1036,6 +1057,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       const player = this.player;
       if (player?.alive && pointHitsTank(projectile.x, projectile.y, player)) {
+        if (!enemyProjectileCanDamagePlayer(projectile.distance)) return false;
         this.damageTank(player, projectile.damage, projectile.ownerId);
         return true;
       }
@@ -1073,7 +1095,8 @@ export class GameScene extends Phaser.Scene {
 
   private damageTank(tank: TankEntity, amount: number, _ownerId: string): void {
     if (!tank.alive || tank.invulnerableUntil > this.elapsedMs) return;
-    tank.hp -= amount;
+    tank.hp = Math.max(0, tank.hp - amount);
+    if (tank.team === 'player') this.dispatchHud();
     this.audio.play(tank.team === 'player' ? 'hurt' : 'hit');
     this.spark(tank.x, tank.y, tank.team === 'player' ? COLORS.yellow : COLORS.red, 9);
 
@@ -1092,6 +1115,7 @@ export class GameScene extends Phaser.Scene {
   private damageBase(amount: number): void {
     if (this.status !== 'playing') return;
     this.baseHp = Math.max(0, this.baseHp - amount);
+    this.dispatchHud();
     this.audio.play('hurt');
     const base = gridCenter(13, 24);
     this.explode(base.x, base.y, 10);
@@ -1209,13 +1233,19 @@ export class GameScene extends Phaser.Scene {
     this.lastPickup = kind;
     this.lastPickupAt = this.elapsedMs;
     if (info.category === 'ammo') {
-      this.ammoSkill = kind as AmmoSkill;
-      this.ammoShots = info.shots ?? 6;
-      this.toast(`获得【${info.name}】— 按【空格】发射，剩余 ${this.ammoShots} 发`);
+      const incoming = kind as AmmoSkill;
+      const stacked = this.ammoSkill === incoming;
+      this.ammoShots = stackPickupAmount(this.ammoSkill, incoming, this.ammoShots, info.shots ?? 6);
+      this.ammoSkill = incoming;
+      this.ammoStacks = stacked ? this.ammoStacks + 1 : 1;
+      this.toast(`${stacked ? '叠加' : '获得'}【${info.name}】— ${this.ammoStacks} 层，共 ${this.ammoShots} 发`);
       if (this.player) this.floatingText(this.player.x, this.player.y - 24, '空格发射', COLORS.yellow);
     } else {
-      this.activeSkill = kind as ActiveSkill;
-      this.toast(`获得【${info.name}】— 轻按【Q】释放，无需长按`);
+      const incoming = kind as ActiveSkill;
+      const stacked = this.activeSkill === incoming;
+      this.activeCharges = stackPickupAmount(this.activeSkill, incoming, this.activeCharges, 1);
+      this.activeSkill = incoming;
+      this.toast(`${stacked ? '叠加' : '获得'}【${info.name}】— 轻按【Q】释放，可使用 ${this.activeCharges} 次`);
       if (this.player) this.floatingText(this.player.x, this.player.y - 24, 'Q 释放技能', COLORS.violet);
     }
     this.audio.play('pickup');
@@ -1237,15 +1267,36 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.flash(180, 70, 160, 255, false);
       this.toast('子弹时间启动：敌军减速 5 秒');
     } else if (skill === 'airstrike') {
-      for (let index = 0; index < 6; index += 1) {
-        const angle = Math.random() * Math.PI * 2;
-        const radius = Phaser.Math.Between(25, 165);
-        const x = clamp(player.x + Math.cos(angle) * radius, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
-        const y = clamp(player.y + Math.sin(angle) * radius, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
-        const marker = this.add.circle(x, y, 24, COLORS.red, 0.12).setStrokeStyle(2, COLORS.red, 0.9).setDepth(9);
-        this.bombs.push({ x, y, explodeAt: this.elapsedMs + 700 + index * 100, marker });
+      const targets = this.enemies
+        .filter((enemy) => enemy.alive)
+        .sort((a, b) => Math.hypot(a.x - player.x, a.y - player.y) - Math.hypot(b.x - player.x, b.y - player.y));
+      if (targets.length === 0) {
+        consumed = false;
+        this.toast('当前没有可锁定敌军，空袭未消耗');
+      } else {
+        for (let index = 0; index < 6; index += 1) {
+          const target = targets[index % targets.length];
+          const angle = Math.random() * Math.PI * 2;
+          const spread = Phaser.Math.Between(0, 20);
+          const offsetX = Math.cos(angle) * spread;
+          const offsetY = Math.sin(angle) * spread;
+          const x = clamp(target.x + offsetX, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
+          const y = clamp(target.y + offsetY, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
+          const explodeAt = this.elapsedMs + 800 + index * 90;
+          const marker = this.add.circle(x, y, 34, COLORS.red, 0.12).setStrokeStyle(2, COLORS.red, 0.9).setDepth(9);
+          this.bombs.push({
+            x,
+            y,
+            explodeAt,
+            trackingUntil: explodeAt - 160,
+            offsetX,
+            offsetY,
+            target,
+            marker,
+          });
+        }
+        this.toast('制导空袭已锁定敌军，注意追踪红圈');
       }
-      this.toast('空袭已呼叫，离开红色落点');
     } else if (skill === 'drone') {
       this.spawnDrone();
       this.toast('僚机上线：自动攻击最近敌人 8 秒');
@@ -1281,16 +1332,22 @@ export class GameScene extends Phaser.Scene {
     } else if (skill === 'overdrive') {
       this.overdriveUntil = this.elapsedMs + 7000;
       this.toast('火力超频：7 秒内提高移动速度与射速');
-    } else if (skill === 'emp') {
-      for (const enemy of this.enemies) {
-        if (enemy.alive) enemy.frozenUntil = Math.max(enemy.frozenUntil, this.elapsedMs + (enemy.kind === 'boss' ? 1000 : 2500));
+    } else if (skill === 'lightning') {
+      const targets = Phaser.Utils.Array.Shuffle(
+        this.enemies.filter((enemy) => enemy.alive && enemy.invulnerableUntil <= this.elapsedMs),
+      ).slice(0, LIGHTNING_TARGET_LIMIT);
+      if (targets.length === 0) {
+        consumed = false;
+        this.toast('当前没有可受伤敌军，雷霆打击未消耗');
+      } else {
+        this.triggerThunderStrike(targets);
+        this.toast(`雷霆打击：随机命中 ${targets.length} 辆敌军，每辆 -${LIGHTNING_DAMAGE} HP`);
       }
-      this.cameras.main.flash(220, 100, 180, 255, false);
-      this.toast('EMP 脉冲释放：全场敌军暂时停机');
     }
 
     if (consumed) {
-      this.activeSkill = undefined;
+      this.activeCharges = Math.max(0, this.activeCharges - 1);
+      if (this.activeCharges === 0) this.activeSkill = undefined;
       this.audio.play('pickup');
       this.dispatchHud();
     }
@@ -1301,6 +1358,40 @@ export class GameScene extends Phaser.Scene {
     const core = this.add.rectangle(0, 0, 7, 7, COLORS.red);
     const display = this.add.container(x, y, [ring, core]).setDepth(4);
     this.mines.push({ x, y, expiresAt: this.elapsedMs + 10_000, display });
+  }
+
+  private triggerThunderStrike(targets: TankEntity[]): void {
+    this.cameras.main.flash(180, 185, 225, 255, false);
+    this.audio.play('explode');
+    for (const target of targets) {
+      const points: Array<{ x: number; y: number }> = [{ x: target.x + Phaser.Math.Between(-48, 48), y: 0 }];
+      const segments = 7;
+      for (let index = 1; index <= segments; index += 1) {
+        const progress = index / segments;
+        points.push({
+          x: index === segments ? target.x : target.x + Phaser.Math.Between(-24, 24),
+          y: target.y * progress,
+        });
+      }
+
+      const bolt = this.add.graphics().setDepth(14);
+      bolt.lineStyle(9, COLORS.violet, 0.42);
+      for (let index = 1; index < points.length; index += 1) {
+        bolt.lineBetween(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+      }
+      bolt.lineStyle(3, 0xe8ffff, 1);
+      for (let index = 1; index < points.length; index += 1) {
+        bolt.lineBetween(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+      }
+
+      const impact = this.add.circle(target.x, target.y, 12, COLORS.cyan, 0.3)
+        .setStrokeStyle(4, 0xffffff, 0.95)
+        .setDepth(13);
+      this.tweens.add({ targets: [bolt, impact], alpha: 0, duration: 260, onComplete: () => { bolt.destroy(); impact.destroy(); } });
+      this.spark(target.x, target.y, COLORS.cyan, 16);
+      this.floatingText(target.x, target.y - 24, `-${LIGHTNING_DAMAGE} HP`, COLORS.cyan);
+      this.damageTank(target, LIGHTNING_DAMAGE, 'lightning');
+    }
   }
 
   private spawnDrone(): void {
@@ -1390,9 +1481,14 @@ export class GameScene extends Phaser.Scene {
     const survivors: BombEntity[] = [];
     for (const bomb of this.bombs) {
       const remaining = bomb.explodeAt - this.elapsedMs;
+      if (bomb.target?.alive && this.elapsedMs < bomb.trackingUntil) {
+        bomb.x = clamp(bomb.target.x + bomb.offsetX, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
+        bomb.y = clamp(bomb.target.y + bomb.offsetY, TILE_SIZE * 2, WORLD_SIZE - TILE_SIZE * 2);
+        bomb.marker.setPosition(bomb.x, bomb.y);
+      }
       bomb.marker.setScale(1 + Math.sin(this.elapsedMs / 60) * 0.08).setAlpha(clamp(1 - remaining / 1000, 0.25, 1));
       if (remaining <= 0) {
-        this.areaDamage(bomb.x, bomb.y, 48, 2, true);
+        this.areaDamage(bomb.x, bomb.y, 72, 2, true);
         bomb.marker.destroy();
       } else survivors.push(bomb);
     }
@@ -1564,7 +1660,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildRewardChoices(): RewardChoice[] {
     const allKinds = Object.keys(skillInfo) as PickupKind[];
-    const available = Phaser.Utils.Array.Shuffle(allKinds.filter((kind) => kind !== this.ammoSkill && kind !== this.activeSkill));
+    const available = Phaser.Utils.Array.Shuffle([...allKinds]);
     const ammo = available.find((kind) => skillInfo[kind].category === 'ammo');
     const active = available.find((kind) => skillInfo[kind].category === 'active');
     const selected = [ammo, active].filter((kind): kind is PickupKind => Boolean(kind));
@@ -1738,10 +1834,10 @@ export class GameScene extends Phaser.Scene {
       combo: this.comboMultiplier,
       resonance: this.resonance,
       ammo: ammo
-        ? { name: ammo.name, description: ammo.description, icon: ammo.icon, shots: this.ammoShots, operation: ammo.operation, status: `当前装备 · 剩余 ${this.ammoShots} 发` }
+        ? { name: ammo.name, description: ammo.description, icon: ammo.icon, shots: this.ammoShots, operation: ammo.operation, status: `当前装备 · ${this.ammoStacks} 层 · 剩余 ${this.ammoShots} 发` }
         : { name: '标准炮弹', description: '稳定可靠，无特殊效果', icon: '•', shots: -1, operation: '按住 SPACE 连续发射', status: '默认弹药 · 无限' },
       active: active
-        ? { name: active.name, description: active.description, icon: active.icon, ready: true, cooldownProgress: 1, operation: active.operation, status: '当前携带 · 可使用 1 次' }
+        ? { name: active.name, description: active.description, icon: active.icon, ready: true, cooldownProgress: 1, operation: active.operation, status: `当前携带 · 可使用 ${this.activeCharges} 次` }
         : { name: '等待拾取', description: '拾取紫色战术箱获得主动技能', icon: 'Q', ready: false, cooldownProgress: 0, operation: '拾取后轻按 Q 释放；无需长按', status: '主动技能槽为空' },
       latestPickup: latest
         ? { name: latest.name, icon: latest.icon, operation: latest.operation, category: latest.category, fresh: this.elapsedMs - this.lastPickupAt < 5000 }
