@@ -15,7 +15,7 @@ app.innerHTML = `
         <div class="brand-mark" aria-hidden="true">LXY</div>
         <div>
           <h1>坦克防线</h1>
-          <p>浪尖大学社区 · 像素守卫行动</p>
+          <p>LXY · 像素守卫行动</p>
         </div>
       </div>
       <div class="top-actions">
@@ -64,9 +64,9 @@ app.innerHTML = `
           <div id="game-root" aria-label="坦克防线游戏画面"></div>
           <div class="game-overlay" id="game-overlay">
             <section class="overlay-panel" id="overlay-content">
-              <p class="eyebrow">WAVECREST COMMUNITY // LXY</p>
+              <p class="eyebrow">TACTICAL DEFENSE // LXY</p>
               <h2>坦克防线</h2>
-              <p class="subtitle">守住浪尖核心，改写战场路线。</p>
+              <p class="subtitle">守住基地核心，改写战场路线。</p>
               <p class="mission-line">六个独立关卡正在等待。每次清关可三选一技能，最终关只出现一只潮汐巨兽。</p>
               <div class="start-controls">
                 <select id="difficulty" aria-label="选择难度">
@@ -116,13 +116,13 @@ app.innerHTML = `
               <p class="skill-description" id="active-description">拾取紫色战术箱获得主动技能</p>
               <p class="skill-operation" id="active-operation"><kbd>Q</kbd> 轻按释放，无需长按</p>
             </div>
-            <div class="resonance-card">
-              <div class="resonance-head">
-                <strong>LXY 浪尖共鸣</strong>
-                <span id="resonance-value">0%</span>
+            <div class="defense-energy-card">
+              <div class="defense-energy-head">
+                <strong>防线能量</strong>
+                <span id="defense-energy-value">0%</span>
               </div>
-              <div class="resonance-track"><span id="resonance-fill"></span></div>
-              <p>击毁敌人蓄能；满值自动清弹、控场并修复核心</p>
+              <div class="defense-energy-track"><span id="defense-energy-fill"></span></div>
+              <p>击毁敌人蓄能；满值自动清弹、控制敌军并修复基地核心</p>
             </div>
           </div>
         </section>
@@ -130,15 +130,15 @@ app.innerHTML = `
         <section class="side-card">
           <h3>本次任务</h3>
           <ol class="mission-list">
-            <li>保护底部的浪尖核心</li>
+            <li>保护底部的基地核心</li>
             <li>依次完成六个独立关卡</li>
             <li>利用 LXY 砖墙改变路线</li>
             <li>清关后从三项技能中选择一项</li>
           </ol>
         </section>
 
-        <section class="side-card community-badge">
-          <span class="cn">浪尖大学社区</span>
+        <section class="side-card defense-badge">
+          <span class="cn">基地防御指挥部</span>
           <span class="en">LXY DEFENSE NETWORK</span>
         </section>
       </aside>
@@ -179,8 +179,8 @@ const activeCard = requireElement<HTMLElement>('#active-card');
 const activeIcon = requireElement<HTMLElement>('#active-icon');
 const activeName = requireElement<HTMLElement>('#active-name');
 const activeDescription = requireElement<HTMLElement>('#active-description');
-const resonanceValue = requireElement<HTMLElement>('#resonance-value');
-const resonanceFill = requireElement<HTMLElement>('#resonance-fill');
+const defenseEnergyValue = requireElement<HTMLElement>('#defense-energy-value');
+const defenseEnergyFill = requireElement<HTMLElement>('#defense-energy-fill');
 const pickupReceipt = requireElement<HTMLElement>('#pickup-receipt');
 const receiptIcon = requireElement<HTMLElement>('#receipt-icon');
 const receiptName = requireElement<HTMLElement>('#receipt-name');
@@ -221,7 +221,7 @@ const renderResult = (result: ResultState): void => {
     `
       <p class="eyebrow">${victory ? 'SECTOR SECURED' : 'DEFENSE BREACHED'}</p>
       <h2>${victory ? '防线守住了' : '核心失守'}</h2>
-      <p class="subtitle">${victory ? '浪尖大学社区恢复安全。' : '调整战术，再守一次。'}</p>
+      <p class="subtitle">${victory ? '基地防线恢复安全。' : '调整战术，再守一次。'}</p>
       <p class="mission-line">得分 ${result.score.toString().padStart(6, '0')} · 击毁 ${result.kills} · 最高连击 ×${result.maxCombo.toFixed(1)}</p>
       <div class="start-controls">
         <button class="ghost-button" id="result-home" type="button">返回简报</button>
@@ -296,8 +296,8 @@ const updateHud = (hud: HudState): void => {
   hudEnemies.textContent = hud.enemies.toString().padStart(2, '0');
   hudScore.textContent = hud.score.toString().padStart(6, '0');
   hudCombo.textContent = `×${hud.combo.toFixed(1)}`;
-  resonanceValue.textContent = `${Math.round(hud.resonance)}%`;
-  resonanceFill.style.width = `${Math.max(0, Math.min(100, hud.resonance))}%`;
+  defenseEnergyValue.textContent = `${Math.round(hud.defenseEnergy)}%`;
+  defenseEnergyFill.style.width = `${Math.max(0, Math.min(100, hud.defenseEnergy))}%`;
 
   ammoName.textContent = hud.ammo.name;
   ammoDescription.textContent = `${hud.ammo.description}${hud.ammo.shots >= 0 ? ` · ${hud.ammo.shots} 发` : ''}`;

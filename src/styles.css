@@ -662,14 +662,14 @@ kbd {
   transform-origin: left;
 }
 
-.resonance-card {
+.defense-energy-card {
   padding: 11px 12px;
   border: 1px solid rgba(37, 208, 200, 0.22);
   border-radius: 12px;
   background: linear-gradient(135deg, rgba(37, 208, 200, 0.08), rgba(155, 123, 255, 0.06));
 }
 
-.resonance-head {
+.defense-energy-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -677,13 +677,13 @@ kbd {
   font-size: 12px;
 }
 
-.resonance-head span {
+.defense-energy-head span {
   color: var(--cyan);
   font-family: 'Press Start 2P', monospace;
   font-size: 9px;
 }
 
-.resonance-track {
+.defense-energy-track {
   height: 7px;
   margin-top: 9px;
   overflow: hidden;
@@ -691,7 +691,7 @@ kbd {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.resonance-track span {
+.defense-energy-track span {
   display: block;
   width: 0;
   height: 100%;
@@ -701,7 +701,7 @@ kbd {
   transition: width 180ms ease;
 }
 
-.resonance-card p {
+.defense-energy-card p {
   margin: 7px 0 0;
   color: var(--muted);
   font-size: 10px;
@@ -718,7 +718,7 @@ kbd {
   line-height: 1.5;
 }
 
-.community-badge {
+.defense-badge {
   padding: 18px;
   text-align: center;
   background:
@@ -726,14 +726,14 @@ kbd {
     var(--panel);
 }
 
-.community-badge .cn {
+.defense-badge .cn {
   display: block;
   font-size: 18px;
   font-weight: 900;
   letter-spacing: 0.16em;
 }
 
-.community-badge .en {
+.defense-badge .en {
   display: block;
   margin-top: 7px;
   color: var(--cyan);

@@ -42,6 +42,16 @@ export const createLevelMap = (): TerrainCell[][] => {
     }
   };
 
+  const setMirrored = (col: number, row: number, type: TerrainType): void => {
+    set(col, row, type);
+    set(MAP_COLS - 1 - col, row, type);
+  };
+
+  const fillMirrored = (left: number, top: number, width: number, height: number, type: TerrainType): void => {
+    fill(left, top, width, height, type);
+    fill(MAP_COLS - left - width, top, width, height, type);
+  };
+
   for (let i = 0; i < MAP_COLS; i += 1) {
     set(i, 0, 'steel');
     set(i, MAP_ROWS - 1, 'steel');
@@ -51,23 +61,21 @@ export const createLevelMap = (): TerrainCell[][] => {
     set(MAP_COLS - 1, i, 'steel');
   }
 
-  // 左侧水道与桥口。
-  fill(3, 6, 3, 6, 'water');
-  fill(3, 14, 3, 6, 'water');
-  fill(2, 8, 1, 2, 'water');
-  fill(2, 17, 1, 2, 'water');
+  // 对称双翼水道：上下分段，中间和底部各保留横向换线通道。
+  fillMirrored(3, 5, 2, 4, 'water');
+  fillMirrored(3, 17, 2, 4, 'water');
 
-  // 右侧草地区，草地不阻挡但改变视野。
-  fill(20, 6, 4, 5, 'grass');
-  fill(19, 15, 5, 5, 'grass');
-  fill(18, 8, 2, 2, 'grass');
+  // 水道内侧的草丛掩护区，兼顾伏击与视野变化。
+  fillMirrored(6, 5, 3, 3, 'grass');
+  fillMirrored(6, 18, 3, 3, 'grass');
 
-  // 教学用钢墙角度和若干掩体。
-  [[7, 5], [8, 5], [17, 5], [18, 5], [7, 19], [8, 19], [17, 19], [18, 19], [6, 8], [22, 12]]
-    .forEach(([col, row]) => set(col, row, 'steel'));
+  // 对称钢墙堡垒，控制三条纵向进攻路线但不完全封死通道。
+  [[6, 4], [8, 7], [2, 12], [7, 17], [9, 21]]
+    .forEach(([col, row]) => setMirrored(col, row, 'steel'));
 
-  [[9, 4], [10, 4], [15, 4], [16, 4], [2, 13], [5, 17], [22, 17], [23, 13], [9, 20], [16, 20]]
-    .forEach(([col, row]) => set(col, row, 'brick'));
+  // 对称可破坏掩体，为反弹、穿透和破墙战术提供选择。
+  [[9, 4], [11, 5], [2, 10], [6, 16], [8, 20], [11, 19], [5, 22]]
+    .forEach(([col, row]) => setMirrored(col, row, 'brick'));
 
   // 清空签名展示区，避免其他地形干扰字母轮廓。
   for (let row = 8; row <= 16; row += 1) {
@@ -95,7 +103,7 @@ export const createLevelMap = (): TerrainCell[][] => {
     });
   });
 
-  // 基地与 U 形可破坏防线。
+  // 基地核心与 U 形可破坏防线。
   set(13, 24, 'base');
   [[12, 23], [13, 23], [14, 23], [12, 24], [14, 24]]
     .forEach(([col, row]) => set(col, row, 'brick'));
