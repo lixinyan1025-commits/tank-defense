@@ -19,6 +19,7 @@ import {
   clamp,
   type Direction,
 } from './constants';
+import { addDefenseEnergy, defenseEnergyGainFor, DEFENSE_ENERGY_MAX } from './defenseEnergy';
 import {
   cellAtWorld,
   createLevelMap,
@@ -50,7 +51,7 @@ export interface HudState {
   enemies: number;
   score: number;
   combo: number;
-  resonance: number;
+  defenseEnergy: number;
   ammo: {
     name: string;
     description: string;
@@ -295,7 +296,7 @@ export class GameScene extends Phaser.Scene {
   private comboCount = 0;
   private comboMultiplier = 1;
   private maxCombo = 1;
-  private resonance = 0;
+  private defenseEnergy = 0;
   private lastKillAt = -10_000;
   private ammoSkill?: AmmoSkill;
   private ammoShots = -1;
@@ -383,7 +384,7 @@ export class GameScene extends Phaser.Scene {
     this.updateParticles(dt);
     this.updateTemporaryWalls();
     this.updateLevelDirector();
-    if (this.resonance >= 100) this.activateResonance();
+    if (this.defenseEnergy >= DEFENSE_ENERGY_MAX) this.activateDefenseEnergy();
 
     if (this.elapsedMs - this.lastHudAt > 90) {
       this.lastHudAt = this.elapsedMs;
@@ -448,7 +449,7 @@ export class GameScene extends Phaser.Scene {
     const tuning = difficultyTuning[difficulty];
     this.baseHp = tuning.baseHp;
     this.maxBaseHp = tuning.baseHp;
-    this.resonance = 0;
+    this.defenseEnergy = 0;
     const spawn = gridCenter(13, 22);
     this.player = this.createTank('player', spawn.x, spawn.y);
     this.player.hp = tuning.playerHp;
@@ -500,21 +501,23 @@ export class GameScene extends Phaser.Scene {
       this.floorGraphics.lineBetween(0, i * TILE_SIZE, WORLD_SIZE, i * TILE_SIZE);
     }
 
-    this.add.text(WORLD_SIZE / 2, WORLD_SIZE / 2 + 4, '浪尖大学社区', {
-      fontFamily: 'Noto Sans SC, sans-serif',
-      fontSize: '58px',
-      fontStyle: 'bold',
-      color: '#7fa9b8',
-      stroke: '#7fa9b8',
-      strokeThickness: 1,
-    }).setOrigin(0.5).setAlpha(0.095).setDepth(1).setAngle(-9);
+    // 无文字几何底图：双环防区、对称轴与边界警戒线。
+    const center = WORLD_SIZE / 2;
+    this.floorGraphics.lineStyle(2, COLORS.cyan, 0.1);
+    this.floorGraphics.strokeCircle(center, center, TILE_SIZE * 4.5);
+    this.floorGraphics.strokeCircle(center, center, TILE_SIZE * 7.25);
+    this.floorGraphics.lineBetween(center, TILE_SIZE * 2, center, WORLD_SIZE - TILE_SIZE * 2);
+    this.floorGraphics.lineBetween(TILE_SIZE * 2, center, WORLD_SIZE - TILE_SIZE * 2, center);
 
-    this.add.text(WORLD_SIZE / 2, WORLD_SIZE / 2 + 76, 'LXY DEFENSE NETWORK', {
-      fontFamily: 'monospace',
-      fontSize: '18px',
-      color: '#25d0c8',
-      letterSpacing: 5,
-    }).setOrigin(0.5).setAlpha(0.12).setDepth(1).setAngle(-9);
+    this.floorGraphics.lineStyle(3, COLORS.yellow, 0.1);
+    for (let offset = -2; offset <= 2; offset += 1) {
+      const y = center + offset * TILE_SIZE * 1.5;
+      this.floorGraphics.lineBetween(TILE_SIZE, y - TILE_SIZE, TILE_SIZE * 3, y + TILE_SIZE);
+      this.floorGraphics.lineBetween(WORLD_SIZE - TILE_SIZE * 3, y + TILE_SIZE, WORLD_SIZE - TILE_SIZE, y - TILE_SIZE);
+    }
+
+    this.floorGraphics.lineStyle(2, COLORS.cyan, 0.16);
+    this.floorGraphics.strokeRoundedRect(TILE_SIZE * 9.5, TILE_SIZE * 20.5, TILE_SIZE * 7, TILE_SIZE * 4, 12);
   }
 
   private drawTerrain(): void {
@@ -1120,7 +1123,7 @@ export class GameScene extends Phaser.Scene {
     const base = gridCenter(13, 24);
     this.explode(base.x, base.y, 10);
     this.cameras.main.shake(150, 0.009);
-    this.toast(`浪尖核心受损，剩余 ${this.baseHp} 点耐久`);
+    this.toast(`基地核心受损，剩余 ${this.baseHp} 点耐久`);
     if (this.baseHp <= 0) this.finishGame('defeat');
   }
 
@@ -1134,8 +1137,8 @@ export class GameScene extends Phaser.Scene {
     const stats = enemyStats[enemy.kind as EnemyKind];
     const points = Math.round(stats.score * this.comboMultiplier);
     this.score += points;
-    const resonanceGain = enemy.kind === 'boss' ? 100 : enemy.kind === 'heavy' || enemy.kind === 'ricochet' ? 26 : enemy.kind === 'sniper' ? 22 : 18;
-    this.resonance = Math.min(100, this.resonance + resonanceGain);
+    const defenseEnergyGain = defenseEnergyGainFor(enemy.kind as EnemyKind);
+    this.defenseEnergy = addDefenseEnergy(this.defenseEnergy, defenseEnergyGain);
     this.floatingText(enemy.x, enemy.y, `+${points}`, COLORS.yellow);
     this.audio.play('explode');
 
@@ -1143,8 +1146,8 @@ export class GameScene extends Phaser.Scene {
     if (enemy.kind !== 'boss' && Math.random() < pickupChance) this.spawnPickup(enemy.x, enemy.y);
   }
 
-  private activateResonance(): void {
-    this.resonance = 0;
+  private activateDefenseEnergy(): void {
+    this.defenseEnergy = 0;
     const repaired = this.baseHp < this.maxBaseHp;
     this.baseHp = Math.min(this.maxBaseHp, this.baseHp + 1);
     const enemyShells = this.projectiles.filter((projectile) => projectile.team === 'enemy');
@@ -1171,8 +1174,8 @@ export class GameScene extends Phaser.Scene {
     });
     this.audio.play('wave');
     this.cameras.main.flash(180, 37, 208, 200, false);
-    this.toast(`LXY 浪尖共鸣：清除敌弹、控场${repaired ? '并修复核心 1 点' : ''}`);
-    this.floatingText(center.x, center.y, 'LXY RESONANCE', COLORS.cyan);
+    this.toast(`防线能量释放：清除敌弹、控制敌军${repaired ? '并修复基地核心 1 点' : ''}`);
+    this.floatingText(center.x, center.y, 'DEFENSE PULSE', COLORS.cyan);
     this.dispatchHud();
   }
 
@@ -1832,7 +1835,7 @@ export class GameScene extends Phaser.Scene {
       enemies: this.enemies.filter((enemy) => enemy.alive).length + this.spawnQueue.length,
       score: this.score,
       combo: this.comboMultiplier,
-      resonance: this.resonance,
+      defenseEnergy: this.defenseEnergy,
       ammo: ammo
         ? { name: ammo.name, description: ammo.description, icon: ammo.icon, shots: this.ammoShots, operation: ammo.operation, status: `当前装备 · ${this.ammoStacks} 层 · 剩余 ${this.ammoShots} 发` }
         : { name: '标准炮弹', description: '稳定可靠，无特殊效果', icon: '•', shots: -1, operation: '按住 SPACE 连续发射', status: '默认弹药 · 无限' },
